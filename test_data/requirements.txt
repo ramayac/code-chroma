@@ -1,0 +1,17 @@
+# Python dependencies for the authentication module
+hashlib  # Built-in module for password hashing
+uuid     # Built-in module for unique ID generation
+datetime # Built-in module for date/time handling
+
+# Optional third-party packages for enhanced functionality
+bcrypt>=3.2.0        # More secure password hashing
+pyjwt>=2.8.0         # JSON Web Token implementation
+cryptography>=41.0.0 # Additional cryptographic functions
+passlib>=1.7.4       # Password hashing utilities
+
+# Development dependencies
+pytest>=7.4.0        # Testing framework
+pytest-cov>=4.1.0    # Coverage reporting
+black>=23.7.0        # Code formatting
+flake8>=6.0.0        # Code linting
+mypy>=1.5.0          # Type checking

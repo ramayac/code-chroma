@@ -1,0 +1,15 @@
+# Core dependencies for ChromaDB-based smart search
+chromadb==0.4.22
+click==8.1.7
+
+# Configuration and utility libraries
+pathlib2==2.3.7
+typing-extensions==4.8.0
+
+# Data processing and scientific libraries
+numpy==1.24.3
+scikit-learn==1.3.2
+
+# Text processing
+regex==2023.10.3
+
