@@ -1,5 +1,5 @@
 # Core dependencies for ChromaDB-based smart search
-chromadb==0.4.22
+chromadb==1.0.15
 click==8.1.7
 
 # Configuration and utility libraries
