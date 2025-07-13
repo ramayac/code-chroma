@@ -1,0 +1,170 @@
+# Code Search System - Sequence Diagram
+
+The system follows a three-layer architecture:
+- **CLI Layer**: User interface (cli.py)
+- **Service Layer**: Business logic (chroma_indexer.py, chroma_search.py)
+- **Data Layer**: Database abstraction (chroma_client.py, ChromaDB)
+
+## Indexing Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as CLI (cli.py)
+    participant Indexer as ChromaIndexer
+    participant Client as ChromaClient
+    participant Config as Config
+    participant ChromaDB as ChromaDB Collections
+    participant FileSystem as File System
+
+    User->>CLI: python cli.py index /path/to/repo
+    CLI->>Indexer: ChromaIndexer()
+    Indexer->>Config: Load configuration
+    Config-->>Indexer: Config settings
+    Indexer->>Client: ChromaClient(db_path)
+    Client->>ChromaDB: Create/get collections (files, chunks)
+    ChromaDB-->>Client: Collection references
+    Client-->>Indexer: Client instance
+    
+    CLI->>Indexer: index_repository(repo_path, repo_name)
+    Indexer->>Indexer: _index_files_and_chunks()
+    Indexer->>FileSystem: _load_files(repo_path, config)
+    FileSystem-->>Indexer: List of file documents
+    
+    Indexer->>Indexer: _index_files_with_progress(raw_docs)
+    Indexer->>ChromaDB: Get existing files metadata
+    ChromaDB-->>Indexer: Existing file data
+    Indexer->>Indexer: Compare file hashes (detect changes)
+    
+    loop For each changed file
+        Indexer->>ChromaDB: Upsert file document
+        ChromaDB-->>Indexer: Confirmation
+    end
+    
+    Indexer->>Indexer: _chunk_documents(changed_files)
+    Indexer->>Indexer: _index_chunks_with_progress(chunks)
+    
+    loop For each chunk
+        Indexer->>ChromaDB: Upsert chunk document
+        ChromaDB-->>Indexer: Confirmation
+    end
+    
+    Indexer-->>CLI: Indexing complete
+    CLI-->>User: Success message with stats
+```
+
+## Search Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as CLI (cli.py)
+    participant Search as ChromaSearch
+    participant Client as ChromaClient
+    participant Config as Config
+    participant ChromaDB as ChromaDB Collections
+
+    User->>CLI: python cli.py search "query" --type all
+    CLI->>Search: ChromaSearch()
+    Search->>Config: Load configuration
+    Config-->>Search: Config settings
+    Search->>Client: ChromaClient(db_path)
+    Client->>ChromaDB: Get existing collections
+    ChromaDB-->>Client: Collection references
+    Client-->>Search: Client instance
+    
+    CLI->>Search: search_all(query, limit, min_score)
+    
+    par Search Repositories
+        Search->>Search: search_repositories(query)
+        Search->>ChromaDB: Query repositories collection
+        ChromaDB-->>Search: Raw results
+        Search->>Search: _format_results(results, "repository")
+        Search->>Search: Apply min_score filter
+        Search-->>Search: Formatted repository results
+    and Search Files
+        Search->>Search: search_files(query)
+        Search->>ChromaDB: Query files collection
+        ChromaDB-->>Search: Raw results
+        Search->>Search: _format_results(results, "file")
+        Search->>Search: Apply min_score filter
+        Search-->>Search: Formatted file results
+    and Search Chunks
+        Search->>Search: search_chunks(query)
+        Search->>ChromaDB: Query chunks collection
+        ChromaDB-->>Search: Raw results
+        Search->>Search: _format_results(results, "chunk")
+        Search->>Search: Apply min_score filter
+        Search-->>Search: Formatted chunk results
+    end
+    
+    Search-->>CLI: Combined results {repos, files, chunks}
+    CLI->>CLI: _display_results() for each type
+    CLI-->>User: Formatted search results
+```
+
+## Repository Information Retrieval
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as CLI (cli.py)
+    participant Search as ChromaSearch
+    participant Client as ChromaClient
+    participant ChromaDB as ChromaDB Collections
+
+    User->>CLI: python cli.py info repo_name
+    CLI->>Search: ChromaSearch()
+    Search->>Client: ChromaClient(db_path)
+    Client-->>Search: Client instance
+    
+    CLI->>Search: get_repo_info(repo_name)
+    Search->>ChromaDB: Get repository by name
+    ChromaDB-->>Search: Repository document + metadata
+    Search->>Client: format_repository_info(metadata, document)
+    Client-->>Search: Formatted repository info
+    Search-->>CLI: Repository details
+    CLI-->>User: Repository information display
+```
+
+## Statistics and Collection Management
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as CLI (cli.py)
+    participant Search as ChromaSearch
+    participant ChromaDB as ChromaDB Collections
+
+    User->>CLI: python cli.py stats
+    CLI->>Search: ChromaSearch()
+    Search-->>CLI: Search instance
+    
+    CLI->>Search: get_collection_stats()
+    
+    par Count Collections
+        Search->>ChromaDB: repos_collection.count()
+        ChromaDB-->>Search: Repository count
+    and
+        Search->>ChromaDB: files_collection.count()
+        ChromaDB-->>Search: File count
+    and
+        Search->>ChromaDB: chunks_collection.count()
+        ChromaDB-->>Search: Chunk count
+    end
+    
+    Search->>Search: get_languages()
+    Search->>ChromaDB: Get all file metadata
+    ChromaDB-->>Search: File metadata list
+    Search->>Search: Extract unique languages
+    Search-->>Search: Language list
+    
+    Search->>Search: get_repositories_list()
+    Search->>ChromaDB: Get all repository metadata
+    ChromaDB-->>Search: Repository metadata list
+    Search->>Search: Extract repository names
+    Search-->>Search: Repository names list
+    
+    Search-->>CLI: Complete statistics
+    CLI-->>User: Statistics display
+```

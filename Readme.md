@@ -40,10 +40,14 @@ Project Layout:
 │   ├── chroma_indexer.py    # Indexing logic
 │   ├── chroma_search.py     # Search logic
 │   └── logger.py            # Logging configuration
+├── docs/
+│   └── sequence-diagram.md  # System architecture and flow diagrams
 ├── config.json              # Default settings
 ├── requirements.txt         # Python dependencies
 └── Readme.md                # This documentation
 ```
+
+For detailed system flow and interaction diagrams, see the [Sequence Diagram Documentation](docs/sequence-diagram.md).
 
 ## CLI Commands
 
