@@ -99,8 +99,17 @@ def index_all(repos_dir, max_repos):
         
     except Exception as e:
         import traceback
-        click.echo(f"❌ Error during batch indexing: {e}")
-        click.echo(f"Traceback: {traceback.format_exc()}")
+        error_msg = str(e)
+        
+        if "no such column" in error_msg.lower() or "database" in error_msg.lower():
+            click.echo(f"❌ ChromaDB database issue detected: {error_msg}")
+            click.echo("💡 This usually indicates a corrupted or incompatible database.")
+            click.echo("🔧 The system will attempt to reset the database automatically.")
+            click.echo("   If the issue persists, try manually deleting the index/chroma_db folder.")
+        else:
+            click.echo(f"❌ Error during batch indexing: {e}")
+            click.echo(f"Traceback: {traceback.format_exc()}")
+        
         try:
             logger.error(f"Batch indexing error: {e}")
         except:

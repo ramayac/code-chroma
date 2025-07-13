@@ -35,7 +35,7 @@ class ChromaClient:
     _client = None
     _db_path = None
     
-    def __new__(cls, db_path: str = None):
+    def __new__(cls, db_path: Optional[str] = None):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             # Use config for default path if not provided
@@ -65,15 +65,63 @@ class ChromaClient:
         cls._instance = None
         cls._client = None
         cls._db_path = None
-    
+
     def get_or_create_collection(self, name: str, metadata: Optional[dict] = None):
-        """Get or create a collection"""
+        """Get or create a collection with error handling"""
         if metadata is None:
             metadata = {"hnsw:space": "cosine"}
-        return self._client.get_or_create_collection(name=name, metadata=metadata)
-    
+        
+        if not self._client:
+            raise RuntimeError("ChromaDB client not initialized")
+        
+        try:
+            return self._client.get_or_create_collection(name=name, metadata=metadata)
+        except Exception as e:
+            if "no such column" in str(e).lower() or "database" in str(e).lower():
+                if logger:
+                    logger.warning(f"Database schema issue detected: {e}")
+                    logger.info("Attempting to reset ChromaDB database...")
+                
+                # Try to reset the database
+                try:
+                    self._client.reset()
+                    if logger:
+                        logger.info("Database reset successful, recreating collection...")
+                    return self._client.get_or_create_collection(name=name, metadata=metadata)
+                except Exception as reset_error:
+                    if logger:
+                        logger.error(f"Failed to reset database: {reset_error}")
+                    
+                    # If reset fails, try to recreate the client entirely
+                    if logger:
+                        logger.info("Attempting to recreate ChromaDB client...")
+                    try:
+                        import shutil
+                        if self._db_path and self._db_path.exists():
+                            shutil.rmtree(self._db_path)
+                        if self._db_path:
+                            self._db_path.mkdir(parents=True, exist_ok=True)
+                        
+                        self._client = chromadb.PersistentClient(
+                            path=str(self._db_path),
+                            settings=Settings(anonymized_telemetry=False)
+                        )
+                        if logger:
+                            logger.info("ChromaDB client recreated successfully")
+                        return self._client.get_or_create_collection(name=name, metadata=metadata)
+                    except Exception as recreate_error:
+                        if logger:
+                            logger.error(f"Failed to recreate ChromaDB client: {recreate_error}")
+                        raise
+            else:
+                if logger:
+                    logger.error(f"Unexpected error creating collection '{name}': {e}")
+                raise
+
     def get_collection(self, name: str):
         """Get an existing collection"""
+        if not self._client:
+            raise RuntimeError("ChromaDB client not initialized")
         return self._client.get_collection(name)
     
     @staticmethod
