@@ -7,6 +7,12 @@ Key Features:
   Persistent vector database for high-performance semantic indexing and search.
 - **Multi-repository Support**  
   Index and query 1,000+ repositories seamlessly.
+- **Intelligent Change Detection**  
+  Multi-layered change detection (size, mtime, hash) with optimized file hashing cache.
+- **Smart Code Chunking**  
+  Code-aware chunking with semantic boundaries for better context preservation.
+- **Incremental Processing**  
+  Only processes changed files and chunks, skipping unchanged content for efficiency.
 - **Advanced Filters**  
   Filter by repository, file, code chunk and programming language.
 - **Interactive Search Mode**  
@@ -77,19 +83,39 @@ ChromaDB stores data in three collections:
 - **Files**: Individual file content for file-level search  
 - **Chunks**: Granular code/content chunks for precise search
 
+The system uses intelligent change detection to only process modified files:
+- **Size-based detection**: Quick check for file size changes
+- **Modification time**: Detects file system-level changes
+- **Hash-based verification**: SHA-256 content hashing with caching for accuracy
+- **Incremental chunking**: Only re-processes chunks for changed files
+
 Database location: `index/chroma_db/`
 
 ## Configuration
 
 The search behavior can be customized via `config.json`. Key settings include:
 
-- **`min_search`**: Minimum similarity score for search results (default: 0.3)
+- **`min_search`**: Minimum similarity score for search results (default: 0.35)
   - Higher values (0.7-0.9) return only very similar matches
   - Lower values (0.1-0.3) return more diverse results
   - Can be overridden per search using `--min-score` flag
 
 - **`chunk_size`**: Size of text chunks for indexing (default: 5000)
+  - System warns if chunks exceed 1.5x this size
+  - Larger chunks provide more context but may reduce search precision
+
 - **`chunk_overlap`**: Overlap between chunks to maintain context (default: 100)
+  - Smart overlap preserves semantic boundaries (functions, classes)
+  - Higher values improve context continuity but increase storage
+
 - **`supported_extensions`**: File types to index
-- **`ignore_patterns`**: Files/folders to skip during indexing
+- **`ignore_patterns`**: Files/folders to skip during indexing (includes minified files)
 - **`batch_size`**: Number of items to process in parallel (default: 32)
+
+## Performance Features
+
+- **Change Detection**: Multi-layered approach (size → mtime → hash) for efficient re-indexing
+- **Hash Caching**: Avoids recalculating file hashes for unchanged files
+- **Incremental Processing**: Only processes chunks for modified files
+- **Semantic Chunking**: Code-aware chunking preserves function/class boundaries
+- **Progress Tracking**: Visual indicators show +added, *modified, =unchanged, -removed files

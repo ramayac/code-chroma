@@ -392,13 +392,8 @@ class ChromaIndexer:
         
         if documents:
             try:
-                # Remove existing chunks for this repo
-                try:
-                    existing_chunk_results = self.chunks_collection.get(where={"repo_name": repo_name})
-                    if existing_chunk_results and existing_chunk_results.get('ids'):
-                        self.chunks_collection.delete(ids=existing_chunk_results['ids'])
-                except Exception as e:
-                    logger.debug(f"No existing chunks to delete for {repo_name}: {e}")
+                # Note: Chunk cleanup was already done above based on changed_files
+                # No need to delete all chunks again here
                 
                 # Add new chunks in batches
                 batch_size = config.batch_size
@@ -748,27 +743,40 @@ class ChromaIndexer:
         return chunks
     
     def _get_overlap_lines(self, lines: List[str], overlap_size: int) -> List[str]:
-        """Get overlap lines up to overlap_size characters"""
+        """Get smart overlap lines that preserve code context"""
         if not lines or overlap_size <= 0:
             return []
         
         overlap_lines = []
-        overlap_text = ''
+        overlap_chars = 0
         
-        # Work backwards from end to get overlap_size characters
+        # Work backwards, but try to include complete semantic units
         for i in range(len(lines) - 1, -1, -1):
-            test_line = lines[i]
-            if len(overlap_text) + len(test_line) + 1 <= overlap_size:  # +1 for newline
-                overlap_lines.insert(0, test_line)
-                overlap_text = '\n'.join(overlap_lines)
+            line = lines[i]
+            test_size = overlap_chars + len(line) + 1  # +1 for newline
+            
+            if test_size <= overlap_size:
+                overlap_lines.insert(0, line)
+                overlap_chars = test_size
+                
+                # If we hit certain patterns, that's a good place to stop
+                if line.strip() and any(pattern in line for pattern in ['def ', 'class ', 'function ', '{']):
+                    break
             else:
                 break
         
         return overlap_lines
     
     def _create_chunk(self, chunk_content: str, doc: Dict, chunk_index: int, full_content: str) -> Dict:
-        """Create a chunk dictionary with proper metadata"""
+        """Create a chunk dictionary with proper metadata and validation"""
         file_path = doc.get('relative_path', doc['filename'])
+        
+        # Validate chunk size
+        if len(chunk_content) > config.chunk_size * 1.5:  # Allow 50% overflow
+            logger.warning(f"Chunk {chunk_index} in {file_path} exceeds size limit: {len(chunk_content)} chars")
+        
+        if len(chunk_content.strip()) == 0:
+            logger.warning(f"Empty chunk {chunk_index} in {file_path}")
         
         # Find position in original content
         start_pos = full_content.find(chunk_content)
@@ -784,7 +792,8 @@ class ChromaIndexer:
             'chunk_type': 'text',
             'chunk_index': chunk_index,
             'start_pos': start_pos,
-            'end_pos': start_pos + len(chunk_content)
+            'end_pos': start_pos + len(chunk_content),
+            'size': len(chunk_content)  # Add size metadata
         }
 
     def _get_existing_files_metadata(self, repo_name: str) -> Dict[str, Dict]:
@@ -847,13 +856,27 @@ class ChromaIndexer:
         return False
 
     def _get_file_hash(self, file_path: Path) -> str:
-        """Calculate SHA-256 hash of file content"""
-        hash_sha256 = hashlib.sha256()
+        """Calculate SHA-256 hash of file content with caching"""
+        # Simple caching based on file mtime to avoid recalculating unchanged files
         try:
+            stat = file_path.stat()
+            cache_key = f"{file_path}_{stat.st_mtime}_{stat.st_size}"
+            
+            # Use a simple in-memory cache (could be expanded to disk cache)
+            if not hasattr(self, '_hash_cache'):
+                self._hash_cache = {}
+            
+            if cache_key in self._hash_cache:
+                return self._hash_cache[cache_key]
+            
+            hash_sha256 = hashlib.sha256()
             with open(file_path, "rb") as f:
                 for chunk in iter(lambda: f.read(4096), b""):
                     hash_sha256.update(chunk)
-            return hash_sha256.hexdigest()
+            
+            file_hash = hash_sha256.hexdigest()
+            self._hash_cache[cache_key] = file_hash
+            return file_hash
         except Exception:
             return ""
 

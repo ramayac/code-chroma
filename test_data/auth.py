@@ -1,6 +1,7 @@
 """
 User authentication and management system.
 This module provides functionality for user registration, login, and session management.
+Updated for testing change detection.
 """
 
 import hashlib
@@ -108,3 +109,4 @@ user_manager = UserManager()
 def get_user_manager() -> UserManager:
     """Get the global user manager instance."""
     return user_manager
+// Test change
