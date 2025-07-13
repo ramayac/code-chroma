@@ -29,11 +29,6 @@ class ChromaIndexer:
         self.chroma_client = ChromaClient(db_path)
         
         # Create collections
-        self.repos_collection = self.chroma_client.get_or_create_collection(
-            name="repositories",
-            metadata={"hnsw:space": "cosine"}
-        )
-        
         self.files_collection = self.chroma_client.get_or_create_collection(
             name="files",
             metadata={"hnsw:space": "cosine"}
@@ -50,70 +45,8 @@ class ChromaIndexer:
         if not repo_name:
             repo_name = repo_path_obj.name
         
-        # Index repository summary (silent)
-        repo_summary = self._generate_repo_summary(repo_path_obj, repo_name)
-        self._index_repo_summary(repo_summary, repo_name)
-        
         # Index individual files and chunks
         self._index_files_and_chunks(repo_path_obj, repo_name)
-    
-    def _generate_repo_summary(self, repo_path: Path, repo_name: str) -> Dict:
-        """Generate repository summary"""
-        files = list(repo_path.rglob("*"))
-        code_files = [f for f in files if f.is_file() and self._is_supported_file(f)]
-        
-        # Detect primary language
-        language_count: Dict[str, int] = {}
-        for file in code_files:
-            lang = self._detect_language(file.suffix)
-            language_count[lang] = language_count.get(lang, 0) + 1
-        
-        primary_language = max(language_count.keys(), key=lambda k: language_count[k]) if language_count else "Unknown"
-        
-        # Generate description
-        description = f"Repository: {repo_name}. Primary language: {primary_language}. Contains {len(code_files)} supported files."
-        
-        # Add README content if exists
-        readme_content = self._get_readme_content(repo_path)
-        if readme_content:
-            description += f" README: {readme_content}"
-        
-        return {
-            'name': repo_name,
-            'path': str(repo_path),
-            'description': description,
-            'language': primary_language,
-            'file_count': len(code_files),
-            'total_files': len(files),
-            'readme': readme_content[:500] if readme_content else "",
-            'indexed_at': datetime.now().isoformat()
-        }
-    
-    def _index_repo_summary(self, repo_summary: Dict, repo_name: str):
-        """Index repository summary"""
-        try:
-            # Check if repository already exists
-            existing = self.repos_collection.get(ids=[f"repo_{repo_name}"])
-            if existing['ids']:
-                # Update existing repository silently
-                self.repos_collection.delete(ids=[f"repo_{repo_name}"])
-            
-            self.repos_collection.add(
-                documents=[repo_summary['description']],
-                metadatas=[{
-                    'repo_name': repo_name,
-                    'path': repo_summary['path'],
-                    'language': repo_summary['language'],
-                    'file_count': repo_summary['file_count'],
-                    'total_files': repo_summary['total_files'],
-                    'indexed_at': repo_summary['indexed_at'],
-                    'type': 'repository'
-                }],
-                ids=[f"repo_{repo_name}"]
-            )
-            # Remove verbose logging
-        except Exception as e:
-            logger.error(f"Error indexing repository summary: {e}")
     
     def _index_files_and_chunks(self, repo_path: Path, repo_name: str):
         """Index individual files and their chunks with progress tracking"""
@@ -557,30 +490,6 @@ class ChromaIndexer:
             except Exception as e:
                 logger.error(f"Error adding chunks to collection: {e}")
     
-    def _get_readme_content(self, repo_path: Path) -> Optional[str]:
-        """Get README content"""
-        readme_files = ['README.md', 'README.txt', 'README.rst', 'README', 'readme.md', 'readme.txt']
-        
-        for readme_file in readme_files:
-            readme_path = repo_path / readme_file
-            if readme_path.exists():
-                try:
-                    content = readme_path.read_text(encoding='utf-8')
-                    # Extract meaningful content (skip title, get first few paragraphs)
-                    lines = content.split('\n')
-                    meaningful_lines = []
-                    for line in lines[1:]:  # Skip potential title
-                        line = line.strip()
-                        if line and not line.startswith('#'):
-                            meaningful_lines.append(line)
-                            if len(' '.join(meaningful_lines)) > 300:
-                                break
-                    return ' '.join(meaningful_lines)
-                except Exception as e:
-                    logger.debug(f"Could not read README in {repo_path}: {e}")
-        
-        return None
-    
     def _is_supported_file(self, file_path: Path) -> bool:
         """Check if file is supported"""
         supported_extensions = set(config.supported_extensions)
@@ -618,50 +527,21 @@ class ChromaIndexer:
     def get_collections_info(self) -> Dict:
         """Get information about all collections"""
         try:
-            repos_count = self.repos_collection.count()
             files_count = self.files_collection.count()
             chunks_count = self.chunks_collection.count()
             
             return {
-                'repositories': repos_count,
                 'files': files_count,
                 'chunks': chunks_count,
-                'total_documents': repos_count + files_count + chunks_count
+                'total_documents': files_count + chunks_count
             }
         except Exception as e:
             logger.error(f"Error getting collections info: {e}")
             return {'error': str(e)}
     
-    def list_repositories(self) -> List[Dict]:
-        """List all indexed repositories"""
-        try:
-            results = self.repos_collection.get()
-            repos = []
-            
-            documents = results.get('documents')
-            metadatas = results.get('metadatas')
-            
-            if documents and metadatas:
-                for i, doc in enumerate(documents):
-                    if i < len(metadatas):
-                        metadata = metadatas[i]
-                        repos.append(self.chroma_client.format_repository_info(
-                            metadata, 
-                            document=doc[:100] + "..." if len(doc) > 100 else doc, 
-                            include_path=False
-                        ))
-            
-            return repos
-        except Exception as e:
-            logger.error(f"Error listing repositories: {e}")
-            return []
-    
     def delete_repository(self, repo_name: str):
         """Delete a repository and all its associated data"""
         try:
-            # Delete from repositories collection
-            self.repos_collection.delete(ids=[f"repo_{repo_name}"])
-            
             # Delete from files collection
             files_to_delete = self.files_collection.get(where={"repo_name": repo_name})
             if files_to_delete['ids']:
