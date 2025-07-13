@@ -600,62 +600,228 @@ class ChromaIndexer:
         return documents
     
     def _chunk_documents(self, documents: List[Dict], indexer_config: Dict) -> List[Dict]:
-        """Chunk documents into smaller pieces"""
+        """Chunk documents into smaller pieces with proper overlap and metadata"""
         chunks = []
         chunk_size = indexer_config.get('chunk_size', config.chunk_size)
         chunk_overlap = indexer_config.get('chunk_overlap', config.chunk_overlap)
         
         for doc in documents:
             content = doc['content']
+            file_path = doc.get('relative_path', doc['filename'])
+            language = doc['language']
             
-            # Simple chunking - split by lines and group
-            lines = content.split('\n')
-            current_chunk = []
-            current_size = 0
-            
-            for line in lines:
-                line_size = len(line)
-                
-                # If adding this line would exceed chunk size, save current chunk
-                if current_size + line_size > chunk_size and current_chunk:
-                    chunk_content = '\n'.join(current_chunk)
-                    chunks.append({
-                        'content': chunk_content,
-                        'filename': doc['filename'],
-                        'relative_path': doc['relative_path'],
-                        'full_path': doc['full_path'],
-                        'language': doc['language'],
-                        'chunk_type': 'text',
-                        'chunk_index': len(chunks)
-                    })
-                    
-                    # Keep overlap
-                    overlap_lines = int(len(current_chunk) * chunk_overlap / chunk_size)
-                    if overlap_lines > 0:
-                        current_chunk = current_chunk[-overlap_lines:]
-                        current_size = sum(len(l) for l in current_chunk)
-                    else:
-                        current_chunk = []
-                        current_size = 0
-                
-                current_chunk.append(line)
-                current_size += line_size
-            
-            # Add remaining content as final chunk
-            if current_chunk:
-                chunk_content = '\n'.join(current_chunk)
+            # For small files, create a single chunk
+            if len(content) <= chunk_size:
                 chunks.append({
-                    'content': chunk_content,
+                    'content': content,
                     'filename': doc['filename'],
-                    'relative_path': doc['relative_path'],
+                    'relative_path': file_path,
                     'full_path': doc['full_path'],
-                    'language': doc['language'],
+                    'language': language,
                     'chunk_type': 'text',
-                    'chunk_index': len(chunks)
+                    'chunk_index': 0,
+                    'start_pos': 0,
+                    'end_pos': len(content)
                 })
+                continue
+            
+            # Use code-aware chunking for programming languages
+            if self._is_code_file(language):
+                file_chunks = self._chunk_code_intelligently(content, doc, chunk_size, chunk_overlap)
+            else:
+                file_chunks = self._chunk_text_by_lines(content, doc, chunk_size, chunk_overlap)
+            
+            chunks.extend(file_chunks)
         
         return chunks
     
+    def _is_code_file(self, language: str) -> bool:
+        """Check if this is a code file that benefits from intelligent chunking"""
+        code_languages = {
+            'Python', 'JavaScript', 'TypeScript', 'Java', 'C++', 'C', 'C#', 
+            'PHP', 'Ruby', 'Go', 'Rust', 'Swift', 'Kotlin', 'Scala'
+        }
+        return language in code_languages
+    
+    def _chunk_code_intelligently(self, content: str, doc: Dict, chunk_size: int, chunk_overlap: int) -> List[Dict]:
+        """Chunk code files by preserving semantic boundaries like functions, classes"""
+        chunks = []
+        lines = content.split('\n')
+        file_path = doc.get('relative_path', doc['filename'])
+        
+        # Define semantic boundaries for different languages
+        semantic_markers = {
+            'Python': [r'^\s*def\s+', r'^\s*class\s+', r'^\s*@\w+', r'^\s*if\s+__name__'],
+            'JavaScript': [r'^\s*function\s+', r'^\s*class\s+', r'^\s*const\s+\w+\s*=\s*\(', r'^\s*export\s+'],
+            'TypeScript': [r'^\s*function\s+', r'^\s*class\s+', r'^\s*interface\s+', r'^\s*type\s+'],
+            'Java': [r'^\s*public\s+class\s+', r'^\s*private\s+\w+', r'^\s*public\s+\w+', r'^\s*@\w+'],
+            'C++': [r'^\s*class\s+', r'^\s*struct\s+', r'^\s*\w+\s*::\s*', r'^\s*template\s*<'],
+            'C': [r'^\s*\w+\s+\w+\s*\(', r'^\s*struct\s+', r'^\s*typedef\s+', r'^\s*#define\s+']
+        }
+        
+        language = doc['language']
+        markers = semantic_markers.get(language, [])
+        
+        current_chunk_lines = []
+        current_size = 0
+        chunk_index = 0
+        
+        import re
+        
+        for i, line in enumerate(lines):
+            line_size = len(line) + 1  # +1 for newline
+            
+            # Check if this line is a semantic boundary
+            is_boundary = False
+            if markers:
+                for marker in markers:
+                    if re.match(marker, line):
+                        is_boundary = True
+                        break
+            
+            # If we're at a boundary and have content, consider splitting
+            if is_boundary and current_chunk_lines and current_size > chunk_size * 0.6:
+                # Save current chunk
+                chunk_content = '\n'.join(current_chunk_lines)
+                chunks.append(self._create_chunk(chunk_content, doc, chunk_index, content))
+                
+                # Start new chunk with overlap
+                overlap_lines = self._get_overlap_lines(current_chunk_lines, chunk_overlap)
+                current_chunk_lines = overlap_lines + [line]
+                current_size = sum(len(l) + 1 for l in current_chunk_lines)
+                chunk_index += 1
+                continue
+            
+            # Normal line processing
+            if current_size + line_size > chunk_size and current_chunk_lines:
+                # Save current chunk
+                chunk_content = '\n'.join(current_chunk_lines)
+                chunks.append(self._create_chunk(chunk_content, doc, chunk_index, content))
+                
+                # Start new chunk with overlap
+                overlap_lines = self._get_overlap_lines(current_chunk_lines, chunk_overlap)
+                current_chunk_lines = overlap_lines + [line]
+                current_size = sum(len(l) + 1 for l in current_chunk_lines)
+                chunk_index += 1
+            else:
+                current_chunk_lines.append(line)
+                current_size += line_size
+        
+        # Add remaining content
+        if current_chunk_lines:
+            chunk_content = '\n'.join(current_chunk_lines)
+            chunks.append(self._create_chunk(chunk_content, doc, chunk_index, content))
+        
+        return chunks
+    
+    def _chunk_text_by_lines(self, content: str, doc: Dict, chunk_size: int, chunk_overlap: int) -> List[Dict]:
+        """Chunk non-code files by lines with proper overlap"""
+        chunks = []
+        lines = content.split('\n')
+        current_chunk_lines = []
+        current_chunk_size = 0
+        chunk_index = 0
+        
+        for line in lines:
+            line_size = len(line) + 1  # +1 for newline
+            
+            # If adding this line would exceed chunk size and we have content
+            if current_chunk_size + line_size > chunk_size and current_chunk_lines:
+                # Save current chunk
+                chunk_content = '\n'.join(current_chunk_lines)
+                chunks.append(self._create_chunk(chunk_content, doc, chunk_index, content))
+                
+                # Start new chunk with overlap
+                overlap_lines = self._get_overlap_lines(current_chunk_lines, chunk_overlap)
+                current_chunk_lines = overlap_lines + [line]
+                current_chunk_size = sum(len(l) + 1 for l in current_chunk_lines)
+                chunk_index += 1
+            else:
+                current_chunk_lines.append(line)
+                current_chunk_size += line_size
+        
+        # Add remaining content
+        if current_chunk_lines:
+            chunk_content = '\n'.join(current_chunk_lines)
+            chunks.append(self._create_chunk(chunk_content, doc, chunk_index, content))
+        
+        return chunks
+    
+    def _get_overlap_lines(self, lines: List[str], overlap_size: int) -> List[str]:
+        """Get overlap lines up to overlap_size characters"""
+        if not lines or overlap_size <= 0:
+            return []
+        
+        overlap_lines = []
+        overlap_text = ''
+        
+        # Work backwards from end to get overlap_size characters
+        for i in range(len(lines) - 1, -1, -1):
+            test_line = lines[i]
+            if len(overlap_text) + len(test_line) + 1 <= overlap_size:  # +1 for newline
+                overlap_lines.insert(0, test_line)
+                overlap_text = '\n'.join(overlap_lines)
+            else:
+                break
+        
+        return overlap_lines
+    
+    def _create_chunk(self, chunk_content: str, doc: Dict, chunk_index: int, full_content: str) -> Dict:
+        """Create a chunk dictionary with proper metadata"""
+        file_path = doc.get('relative_path', doc['filename'])
+        
+        # Find position in original content
+        start_pos = full_content.find(chunk_content)
+        if start_pos == -1:
+            start_pos = 0
+        
+        return {
+            'content': chunk_content,
+            'filename': doc['filename'],
+            'relative_path': file_path,
+            'full_path': doc['full_path'],
+            'language': doc['language'],
+            'chunk_type': 'text',
+            'chunk_index': chunk_index,
+            'start_pos': start_pos,
+            'end_pos': start_pos + len(chunk_content)
+        }
+
+    def _get_existing_files_metadata(self, repo_name: str) -> Dict[str, Dict]:
+        """Get existing file metadata for change detection"""
+        try:
+            existing_files = self.files_collection.get(where={"repo_name": repo_name})
+            result = {}
+            if existing_files and existing_files.get('ids'):
+                metadatas = existing_files.get('metadatas')
+                for i, file_id in enumerate(existing_files['ids']):
+                    metadata = metadatas[i] if metadatas and i < len(metadatas) else {}
+                    result[file_id] = {
+                        'size': metadata.get('size', 0),
+                        'mtime': metadata.get('mtime', 0),
+                        'hash': metadata.get('hash', '')
+                    }
+            return result
+        except Exception:
+            return {}
+
+    def _has_file_changed(self, file_path: Path, existing_metadata: Dict) -> bool:
+        """Check if file has changed using multiple methods"""
+        current_metadata = self._get_file_metadata(file_path)
+        
+        # Quick checks first
+        if current_metadata['size'] != existing_metadata.get('size', 0):
+            return True
+        
+        if current_metadata['mtime'] != existing_metadata.get('mtime', 0):
+            return True
+        
+        # Hash check as final verification
+        if current_metadata['hash'] != existing_metadata.get('hash', ''):
+            return True
+        
+        return False
+
     def _should_ignore_file(self, file_path: Path, ignore_patterns: List[str]) -> bool:
         """Check if file should be ignored based on patterns"""
         file_str = str(file_path)
@@ -702,38 +868,3 @@ class ChromaIndexer:
             }
         except Exception:
             return {'size': 0, 'mtime': 0, 'hash': ''}
-
-    def _get_existing_files_metadata(self, repo_name: str) -> Dict[str, Dict]:
-        """Get existing file metadata for change detection"""
-        try:
-            existing_files = self.files_collection.get(where={"repo_name": repo_name})
-            result = {}
-            if existing_files and existing_files.get('ids'):
-                metadatas = existing_files.get('metadatas')
-                for i, file_id in enumerate(existing_files['ids']):
-                    metadata = metadatas[i] if metadatas and i < len(metadatas) else {}
-                    result[file_id] = {
-                        'size': metadata.get('size', 0),
-                        'mtime': metadata.get('mtime', 0),
-                        'hash': metadata.get('hash', '')
-                    }
-            return result
-        except Exception:
-            return {}
-
-    def _has_file_changed(self, file_path: Path, existing_metadata: Dict) -> bool:
-        """Check if file has changed using multiple methods"""
-        current_metadata = self._get_file_metadata(file_path)
-        
-        # Quick checks first
-        if current_metadata['size'] != existing_metadata.get('size', 0):
-            return True
-        
-        if current_metadata['mtime'] != existing_metadata.get('mtime', 0):
-            return True
-        
-        # Hash check as final verification
-        if current_metadata['hash'] != existing_metadata.get('hash', ''):
-            return True
-        
-        return False
