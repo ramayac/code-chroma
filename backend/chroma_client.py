@@ -4,6 +4,7 @@ Ensures only one instance of ChromaDB client exists.
 """
 
 import os
+import sys
 import chromadb
 from chromadb.config import Settings
 from pathlib import Path
@@ -13,6 +14,20 @@ from backend.config import config
 
 # Set environment variable to disable telemetry
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
+def check_database_lock(db_path: Path) -> bool:
+    """Check if the database file is locked by another process"""
+    sqlite_file = db_path / "chroma.sqlite3"
+    if not sqlite_file.exists():
+        return False
+    
+    try:
+        # Try to open the file in write mode
+        with open(sqlite_file, 'a'):
+            pass
+        return False
+    except (PermissionError, OSError):
+        return True
 
 # Monkey patch ChromaDB telemetry to prevent errors
 try:
@@ -44,13 +59,45 @@ class ChromaClient:
             cls._db_path = Path(db_path)
             cls._db_path.mkdir(parents=True, exist_ok=True)
             
-            # Initialize ChromaDB client with telemetry disabled
-            cls._client = chromadb.PersistentClient(
-                path=str(cls._db_path),
-                settings=Settings(anonymized_telemetry=False)
-            )
-            if logger:
-                logger.info(f"ChromaDB client initialized at {cls._db_path}")
+            # Check if database is locked before attempting to connect
+            if check_database_lock(cls._db_path):
+                raise RuntimeError(
+                    "ChromaDB database is currently locked by another process. "
+                    "Please close any other instances of the application and try again."
+                )
+            
+            # Initialize ChromaDB client with retry logic for file locking issues
+            max_retries = 3
+            retry_delay = 1.0
+            
+            for attempt in range(max_retries):
+                try:
+                    # Initialize ChromaDB client with telemetry disabled
+                    cls._client = chromadb.PersistentClient(
+                        path=str(cls._db_path),
+                        settings=Settings(anonymized_telemetry=False)
+                    )
+                    if logger:
+                        logger.info(f"ChromaDB client initialized at {cls._db_path}")
+                    break
+                except Exception as e:
+                    if "being used by another process" in str(e) or "WinError 32" in str(e):
+                        if attempt < max_retries - 1:
+                            if logger:
+                                logger.warning(f"Database locked, retrying in {retry_delay}s... (attempt {attempt + 1}/{max_retries})")
+                            import time
+                            time.sleep(retry_delay)
+                            retry_delay *= 2  # Exponential backoff
+                        else:
+                            if logger:
+                                logger.error(f"Failed to initialize ChromaDB after {max_retries} attempts: {e}")
+                            raise RuntimeError(f"ChromaDB database is locked by another process. Please close any other instances of the application and try again.")
+                    else:
+                        raise
+            
+            if not cls._client:
+                raise RuntimeError("Failed to initialize ChromaDB client")
+                
         return cls._instance
     
     @property
@@ -61,7 +108,27 @@ class ChromaClient:
     def reset(cls):
         """Reset the singleton instance"""
         if cls._client:
-            cls._client.reset()
+            try:
+                cls._client.reset()
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Error during client reset: {e}")
+        cls._instance = None
+        cls._client = None
+        cls._db_path = None
+
+    @classmethod
+    def close(cls):
+        """Close the ChromaDB client connection"""
+        if cls._client:
+            try:
+                # ChromaDB doesn't have an explicit close method, but we can reset
+                cls._client.reset()
+                if logger:
+                    logger.info("ChromaDB client connection closed")
+            except Exception as e:
+                if logger:
+                    logger.warning(f"Error closing ChromaDB client: {e}")
         cls._instance = None
         cls._client = None
         cls._db_path = None
@@ -77,7 +144,19 @@ class ChromaClient:
         try:
             return self._client.get_or_create_collection(name=name, metadata=metadata)
         except Exception as e:
-            if "no such column" in str(e).lower() or "database" in str(e).lower():
+            error_msg = str(e)
+            
+            # Handle file locking issues
+            if "being used by another process" in error_msg or "WinError 32" in error_msg:
+                if logger:
+                    logger.error(f"Database file is locked by another process: {error_msg}")
+                raise RuntimeError(
+                    "ChromaDB database is currently locked by another process. "
+                    "Please close any other instances of the application and try again."
+                )
+            
+            # Handle database schema issues
+            elif "no such column" in error_msg.lower() or "database" in error_msg.lower():
                 if logger:
                     logger.warning(f"Database schema issue detected: {e}")
                     logger.info("Attempting to reset ChromaDB database...")

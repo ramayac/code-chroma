@@ -5,14 +5,26 @@ Provides commands for indexing, searching, and managing repositories.
 
 import click
 import os
+import atexit
 from pathlib import Path
 from typing import List, Dict, Any
 from backend.chroma_indexer import ChromaIndexer
 from backend.chroma_search import ChromaSearch
+from backend.chroma_client import ChromaClient
 from backend.logger import get_logger
 from backend.config import config
 
 logger = get_logger()
+
+# Register cleanup function
+def cleanup_on_exit():
+    """Cleanup function to ensure proper database closure"""
+    try:
+        ChromaClient.close()
+    except:
+        pass
+
+atexit.register(cleanup_on_exit)
 
 @click.group()
 def cli():
@@ -101,7 +113,15 @@ def index_all(repos_dir, max_repos):
         import traceback
         error_msg = str(e)
         
-        if "no such column" in error_msg.lower() or "database" in error_msg.lower():
+        if "being used by another process" in error_msg or "WinError 32" in error_msg:
+            click.echo(f"❌ Database file is locked: {error_msg}")
+            click.echo("💡 This usually means another instance of the application is running.")
+            click.echo("🔧 Solution:")
+            click.echo("   1. Close any other instances of this application")
+            click.echo("   2. Check Windows Task Manager for any lingering Python processes")
+            click.echo("   3. Wait a few seconds and try again")
+            click.echo("   4. If the issue persists, restart your computer")
+        elif "no such column" in error_msg.lower() or "database" in error_msg.lower():
             click.echo(f"❌ ChromaDB database issue detected: {error_msg}")
             click.echo("💡 This usually indicates a corrupted or incompatible database.")
             click.echo("🔧 The system will attempt to reset the database automatically.")
@@ -459,6 +479,83 @@ def _display_results(title: str, results: List[Dict], icon: str):
             preview = result['content'][:100] + "..."
             click.echo(f"    Preview: {preview}")
         click.echo()
+
+@cli.command()
+def check_db():
+    """Check database status and diagnose issues"""
+    try:
+        from backend.chroma_client import check_database_lock
+        from backend.config import config
+        import os
+        
+        db_path = Path(os.path.join(config.index_folder, "chroma_db"))
+        sqlite_file = db_path / "chroma.sqlite3"
+        
+        click.echo("🔍 Checking ChromaDB status...")
+        click.echo(f"📁 Database path: {db_path}")
+        
+        if not db_path.exists():
+            click.echo("❌ Database directory does not exist")
+            return
+        
+        if not sqlite_file.exists():
+            click.echo("✅ No database file found - ready for first-time setup")
+            return
+        
+        # Check file size
+        file_size = sqlite_file.stat().st_size
+        click.echo(f"📊 Database file size: {file_size:,} bytes")
+        
+        # Check if locked
+        if check_database_lock(db_path):
+            click.echo("🔒 Database is currently LOCKED by another process")
+            click.echo("💡 Solutions:")
+            click.echo("   1. Close any other instances of this application")
+            click.echo("   2. Check Windows Task Manager for Python processes")
+            click.echo("   3. Wait a few moments and try again")
+        else:
+            click.echo("✅ Database is available and not locked")
+            
+            # Try to connect
+            try:
+                client = ChromaClient()
+                if client.client:
+                    collections_info = client.client.list_collections()
+                    click.echo(f"✅ Successfully connected to database")
+                    click.echo(f"📚 Collections found: {len(collections_info)}")
+                    for collection in collections_info:
+                        click.echo(f"   - {collection.name}")
+                else:
+                    click.echo("❌ Failed to initialize database client")
+            except Exception as e:
+                click.echo(f"❌ Failed to connect to database: {e}")
+                
+    except Exception as e:
+        click.echo(f"❌ Error checking database: {e}")
+
+@cli.command()
+def reset_db():
+    """Reset the ChromaDB database (WARNING: This will delete all data!)"""
+    try:
+        from backend.config import config
+        import shutil
+        
+        db_path = Path(os.path.join(config.index_folder, "chroma_db"))
+        
+        if not click.confirm(f"⚠️  This will permanently delete all indexed data in {db_path}. Continue?"):
+            click.echo("❌ Operation cancelled")
+            return
+            
+        if db_path.exists():
+            shutil.rmtree(db_path)
+            click.echo(f"✅ Database directory deleted: {db_path}")
+        else:
+            click.echo(f"ℹ️  Database directory does not exist: {db_path}")
+            
+        click.echo("✅ Database reset complete. You can now run indexing commands.")
+        
+    except Exception as e:
+        click.echo(f"❌ Error resetting database: {e}")
 
 if __name__ == '__main__':
     cli()
